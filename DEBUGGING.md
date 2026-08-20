@@ -1,142 +1,321 @@
 # Debugging Guide — Psych Object API (init.lua)
 
-Hướng dẫn chi tiết để debug khi sử dụng Psych Object API (file init.lua) trong Psych Engine.
-Mục tiêu: giúp bạn bật logging, đọc log, hiểu trace Haxe compilation do ReferenceResolver sinh ra, và khắc phục lỗi thường gặp.
+Comprehensive guide to debugging when using Psych Object API in Psych Engine. Topics cover enabling logging, reading logs, understanding Haxe compilation traces from ReferenceResolver, and fixing common issues.
 
-Repo / source (permalinks dùng commit hiện tại):
-- init.lua: https://github.com/nguyenkiet1234d/new_aip_luaa/blob/b78003ebfb1f614cbbeb44a68c14f2321f191b6f/init.lua
+## Implementation Anchors
 
-Các phần quan trọng trong mã (tham khảo):
-- debugTrace / debugOutput: https://github.com/nguyenkiet1234d/new_aip_luaa/blob/b78003ebfb1f614cbbeb44a68c14f2321f191b6f/init.lua#L105-L122
-- writeDebugFile / ensureDebugFile / closeDebugFile: https://github.com/nguyenkiet1234d/new_aip_luaa/blob/b78003ebfb1f614cbbeb44a68c14f2321f191b6f/init.lua#L75-L103
-- PsychObject.Debug API: https://github.com/nguyenkiet1234d/new_aip_luaa/blob/b78003ebfb1f614cbbeb44a68c14f2321f191b6f/init.lua#L804-L829
-- ReferenceResolver.compile/serialize: https://github.com/nguyenkiet1234d/new_aip_luaa/blob/b78003ebfb1f614cbbeb44a68c14f2321f191b6f/init.lua#L224-L313
+- [init.lua source](https://github.com/nguyenkiet1234d/psych_object_api_luaS/blob/main/init.lua)
+- [debugTrace / debugOutput](https://github.com/nguyenkiet1234d/psych_object_api_luaS/blob/main/init.lua#L105-L122)
+- [writeDebugFile / ensureDebugFile / closeDebugFile](https://github.com/nguyenkiet1234d/psych_object_api_luaS/blob/main/init.lua#L75-L103)
+- [PsychObject.Debug API](https://github.com/nguyenkiet1234d/psych_object_api_luaS/blob/main/init.lua#L804-L829)
+- [ReferenceResolver.serialize & needsCompilation](https://github.com/nguyenkiet1234d/psych_object_api_luaS/blob/main/init.lua#L224-L280)
 
 ---
 
-1) Bật/tắt debug nhanh
+## Quick Start — Enable Debug Now
 
-- Bật debug (console):
-  Debug.enable(true)
-  Debug.mode('console')
+### Enable to Console (Fastest)
 
-- Ghi vào file log (file only):
-  Debug.mode('file')
-  Debug.file('mods/my_debug.log', true) -- path và clear file
+```lua
+Debug.enable(true)
+Debug.mode('console')
+```
 
-- Cả hai (console + file):
-  Debug.mode('both')
-  Debug.file('mods/psych_object_api.log', true)
+### Enable to File (Best for Long Sessions)
 
-- Tắt debug:
-  Debug.enable(false)
-  -- hoặc đóng file và tắt:
-  PsychObject.shutdownDebug()
+```lua
+Debug.mode('file')
+Debug.file('mods/my_debug.log', true)  -- path and clear file
+Debug.enable(true)
+```
 
-Lưu ý: Debug.enable(true) sẽ in credit và trạng thái, và bắt đầu ghi lịch sử debugHistory (một table lưu các message).
+### Enable to Both (Maximum Visibility)
 
-2) Ý nghĩa các chế độ
+```lua
+Debug.enable(true)
+Debug.mode('both')
+Debug.file('mods/psych_object_api.log', true)
+```
 
-- console: in ra console thông qua debugPrint / print; tiện khi đang phát triển trên máy và muốn thấy output trực tiếp.
-- file: ghi vào `debugLogPath` (mặc định 'mods/psych_object_api.log') — dùng khi console không thể hiển thị hoặc cần lưu lại lịch sử.
-- both: đồng thời cả console và file.
+### Disable When Done
 
-3) Vị trí file log & quyền ghi
-
-- Mặc định log ghi vào mods/psych_object_api.log. Bạn có thể đổi bằng Debug.file(path, clear).
-- Nếu file không thể mở (permission hoặc đường dẫn không tồn tại), hàm ensureDebugFile sẽ trả false; debugOutput sẽ không ghi. Nếu gặp lỗi ghi, hàm sẽ đóng file handle tự động để tránh crash.
-- Nếu log không xuất hiện khi chọn mode 'file': kiểm tra quyền ghi thư mục, đường dẫn tương đối so với root game (thử dùng đường dẫn đầy đủ nếu cần).
-
-4) debugHistory và Debug.info
-
-- debugHistory = table lưu các message với limit circular (~5000 bản ghi). Dùng Debug.history() để lấy table này.
-- Debug.info(msg): in message nếu debugEnabled.
-- Debug.clear(): xóa debugHistory.
-
-5) Tìm lỗi Haxe serialization / compiled code
-
-- Khi một call cần biên dịch Haxe (ReferenceResolver.needsCompilation trả true), code sẽ build chuỗi Haxe (ReferenceResolver.executeClassCall / executeObjectCall) và gọi runHaxeCode.
-- Nếu debugEnabled thì reference resolver sẽ gọi debugTrace('Haxe Compile ...', true) — bạn sẽ thấy thông báo kèm đoạn code Haxe được sinh ra trong console/file.
-
-Ví dụ: nếu bạn gọi PlayState:call('method', { game.boyfriend }), ReferenceResolver sẽ serialize đối tượng proxy thành một chuỗi `Reflect.getProperty(game, 'boyfriend')...` và compile 1 dòng Haxe. Quan sát dòng Haxe này trong log giúp bạn biết engine nhận gì.
-
-Permalink: ReferenceResolver serialization
-https://github.com/nguyenkiet1234d/new_aip_luaa/blob/b78003ebfb1f614cbbeb44a68c14f2321f191b6f/init.lua#L224-L280
-
-6) Mẫu phiên debug (bước-by-step)
-
-1. Bật logging: Debug.enable(true); Debug.mode('both'); Debug.file('mods/my_debug.log', true)
-2. Thực hiện call nghi ngờ (ví dụ PlayState:call('doSomething', { game.boyfriend }))
-3. Mở console để xem output; kiểm tra file mods/my_debug.log để xem log đầy đủ.
-4. Tìm trong log các dòng bắt đầu bằng "[PsychObject] Haxe Compile" — đó là code Haxe do ReferenceResolver sinh ra.
-5. Sao chép chuỗi Haxe từ log và thử chạy trực tiếp trong Haxe console hoặc dùng runHaxeCode(...) trong Lua để kiểm nghiệm (cẩn thận: runHaxeCode có thể gây lỗi runtime nếu code sai).
-6. Nếu runHaxeCode bị lỗi: log sẽ in thông báo FAILED (màu đỏ) — check syntax hoặc object path.
-
-7) Kiểm tra lỗi ghi file (không thể mở file)
-
-- Khi Debug.file() gọi ensureDebugFile và io.open trả nil, Debug.file trả false cùng message lỗi. Giải pháp:
-  - Kiểm tra thư mục tồn tại; tạo thư mục nếu cần.
-  - Kiểm tra quyền truy cập (game process cần quyền ghi).
-  - Dùng đường dẫn tuyệt đối nếu relative gây lỗi.
-
-8) Phân tích debugTrace messages
-
-- debugTrace nhận 2 tham số: action (string) và result (boolean/nil).
-- Nếu result == false thì message thêm "-> FAILED" (cờ lỗi) và in màu khác. Nhiệm vụ bạn: tìm những message FAILED và trace nguyên nhân.
-- Ví dụ message: "call PlayState.someMethod -> FAILED" có thể do:
-  - method không tồn tại
-  - serialize args tạo code Haxe sai
-  - runHaxeCode trả lỗi runtime
-  - setProperty / getProperty lỗi (đường dẫn sai)
-
-9) Thử nghiệm an toàn
-
-- Bao mọi call nghi ngờ bằng pcall để tránh crash toàn script, ví dụ:
-  local ok, res = pcall(function() PlayState:call('method', {...}) end)
-  if not ok then Debug.info('PlayState call failed: ' .. tostring(res)) end
-
-- Bạn có thể tắt debug sau khi debug xong: PsychObject.shutdownDebug() để đóng file và tắt logging.
-
-10) Các lỗi thường gặp liên quan debug và cách khắc phục nhanh
-
-- Không thấy log nào sau khi bật file mode:
-  - Kiểm tra Debug.mode có thực sự set; gọi Debug.getMode() để kiểm tra.
-  - Kiểm tra Debug.file(...) trả về path hợp lệ.
-  - Kiểm tra quyền ghi, thử dùng đường dẫn mods/debug.log hoặc /tmp/debug.log.
-
-- Log chứa Haxe code nhưng runHaxeCode lỗi cú pháp:
-  - Kiểm tra serialize của ReferenceResolver: nếu bạn truyền Lua table phức tạp (chứa function), serializer trả 'null' hoặc tạo mã bất hợp lệ.
-  - Thử truyền Ref(target, 'field') thay vì truyền table để giữ reference Haxe sạch.
-
-- debugHistory quá dài / memory concern:
-  - Debug.history() trả table; nếu không cần lưu, gọi Debug.clear().
-
-11) Khi cần thêm trace (custom)
-
-- Bạn có thể dùng Debug.info('my message') bất kỳ đâu trong code Lua để in thông tin debug (nếu debugEnabled). Example:
-  Debug.info('Value of x = ' .. tostring(bf.x))
-
-- Nếu muốn log thêm từ init.lua, thêm debugOutput(...) hoặc debugTrace(...) tại vị trí cần (chỉnh code source).
-
-12) Debugging Haxe-level failures
-
-- Khi Haxe code được run nhưng lỗi xuất hiện trong Haxe stack, thông báo lỗi có thể xuất ra console hoặc file (tùy engine). Hãy sao chép cả stack trace và Haxe code đã biên dịch để tìm nguyên nhân.
-- Đôi khi lỗi do Reflect.getProperty chain không đúng path — kiểm tra biến `path` output từ ReferenceResolver (log sẽ show).
-
-13) Checklist để debug hiệu quả
-
-- 1) Bật Debug.enable(true) + Debug.mode('both')
-- 2) Nếu cần ghi file, Debug.file('path', true)
-- 3) Reproduce minimal failing call — giảm tham số, dùng pcall
-- 4) Kiểm tra logs: tìm "Haxe Compile" hoặc các message "-> FAILED"
-- 5) Copy Haxe code ra, test bằng runHaxeCode hoặc Haxe console
-- 6) Fix: dùng Ref(...) nếu cần reference Haxe, chuyển Lua function sang Haxe, hoặc sửa path
+```lua
+Debug.enable(false)
+-- or fully shutdown:
+PsychObject.shutdownDebug()
+```
 
 ---
 
-Nếu bạn muốn, mình có thể tiếp tục và:
-- A) Chèn các ví dụ debug trực tiếp vào README (ví dụ lệnh mẫu và output mẫu). (Mình sẽ commit file `DEBUGGING.md` đã làm.)
-- B) Thêm script nhỏ `tools/inspect_debug.lua` để in Debug.history() và tail log file (thuận tiện khi dev).
-- C) Thêm một ví dụ thực tế (demo) với deliberate failing case để bạn thấy log output và Haxe code.
+## Understanding Debug Modes
 
-Bạn muốn mình làm tiếp A/B/C nào không?
+| Mode | Output | Best For |
+|------|--------|----------|
+| `console` | Print to debugPrint/print | Live development, quick feedback |
+| `file` | Write to log file only | Production, console unavailable, persistent history |
+| `both` | Both console and file | Comprehensive debugging, archives + live view |
+
+---
+
+## Log File Location & Permissions
+
+### Default Location
+
+```
+mods/psych_object_api.log
+```
+
+### Custom Location
+
+```lua
+Debug.file('mods/my_mod/debug.log', false)  -- false = don't clear
+Debug.file('mods/my_mod/debug.log', true)   -- true = clear on start
+```
+
+### Permission Issues
+
+If you can't write to the log file:
+
+1. Check directory exists: `mods/` folder must be present
+2. Check game has write permission
+3. Try absolute path if relative fails: `Debug.file('/tmp/debug.log')`
+4. Check error with: `local ok, err = Debug.file('path'); if not ok then print(err) end`
+
+---
+
+## Debug History & Custom Logging
+
+### Access Debug History
+
+```lua
+local history = Debug.history()
+for i, msg in ipairs(history) do
+    print("[" .. i .. "] " .. msg)
+end
+```
+
+History is limited to ~5000 messages (circular buffer).
+
+### Log Custom Messages
+
+```lua
+Debug.info('My custom message')  -- Only prints if debugEnabled
+```
+
+### Clear History
+
+```lua
+Debug.clear()
+```
+
+---
+
+## Understanding Haxe Compilation Traces
+
+### When Does Compilation Happen?
+
+When you pass object proxies or explicit `Ref` objects to class/object method calls, ReferenceResolver detects this and **compiles to Haxe code** instead of using native callMethod.
+
+### Example: What Gets Compiled
+
+```lua
+-- This requires Haxe compilation (uses game.boyfriend proxy)
+PlayState:call('doSomething', { game.boyfriend, 2.0 })
+
+-- Log output shows:
+-- [PsychObject] Haxe Compile Class Call: return PlayState.doSomething(game, 2.0);
+```
+
+### How to Read Haxe Traces
+
+```lua
+Debug.enable(true)
+Debug.mode('both')
+
+-- Trigger a compilation
+PlayState:call('method', { game.boyfriend })
+
+-- Look for this in console/log:
+-- [PsychObject] Haxe Compile Class Call: return PlayState.method(...)
+```
+
+### Debugging Serialization Errors
+
+If you see "FAILED" in the logs:
+
+1. Copy the Haxe code from the log
+2. Test it directly:
+   ```lua
+   Haxe.run('return PlayState.method(game);')  -- try your Haxe code
+   ```
+3. Common issues:
+   - Invalid Haxe syntax in serialized arguments
+   - Wrong object path in Reflect.getProperty chain
+   - Method doesn't exist on the class
+   - Arguments don't match method signature
+
+---
+
+## Step-by-Step Debug Session
+
+### 1. Enable Logging
+
+```lua
+Debug.enable(true)
+Debug.mode('both')
+Debug.file('mods/debug.log', true)
+```
+
+### 2. Perform Minimal Failing Call
+
+Isolate the problematic operation:
+
+```lua
+local ok, err = pcall(function()
+    PlayState:call('suspiciousMethod', { game.boyfriend })
+end)
+if not ok then
+    Debug.info('Call failed: ' .. tostring(err))
+end
+```
+
+### 3. Check Logs for Haxe Code
+
+```lua
+local history = Debug.history()
+for i, msg in ipairs(history) do
+    if msg:find('Haxe Compile') then
+        print("Generated: " .. msg)
+    end
+    if msg:find('FAILED') then
+        print("Error: " .. msg)
+    end
+end
+```
+
+### 4. Test Haxe Code Directly
+
+```lua
+-- Extract and test the Haxe code
+Haxe.run('return PlayState.suspiciousMethod(game);')
+```
+
+### 5. Apply Fix
+
+Common fixes:
+
+```lua
+-- Use Ref for field access
+local hxRef = Ref(game.boyfriend, 'x')
+PlayState:call('setX', { hxRef })
+
+-- Or avoid complex arguments
+PlayState:call('simpleMethod', { 123, 'text' })  -- no proxies
+```
+
+---
+
+## Common Errors & Solutions
+
+### "No logs after enabling file mode"
+
+**Solution:**
+
+```lua
+print(Debug.getMode())      -- Check mode is 'file' or 'both'
+print(Debug.isEnabled())    -- Check enabled is true
+print(Debug.history())      -- Check history has entries
+
+-- Try different path
+Debug.file('mods/test_log.txt', true)
+```
+
+### "Haxe code in log but runHaxeCode fails"
+
+**Solution:**
+
+1. Check if Lua tables with functions are being passed (can't serialize)
+2. Use `Ref(target, 'field')` instead of complex arguments
+3. Verify method exists on target class
+
+```lua
+-- WRONG - can't serialize Lua function
+PlayState:call('method', { function() end })
+
+-- RIGHT - use Ref for clarity
+local ref = Ref(game, 'boyfriend')
+PlayState:call('method', { ref })
+```
+
+### "debugHistory consumes too much memory"
+
+**Solution:**
+
+```lua
+Debug.clear()  -- Clear periodically
+-- Or disable history
+Debug.enable(false)  -- Stops capturing
+```
+
+### "Call says OK in log but still fails in game"
+
+**Solution:**
+
+Log only captures the Lua->Haxe call result. The method itself may still fail. Check:
+
+1. Method return value: `local result = PlayState:call('method', {...})`
+2. Side effects: did the method actually modify state?
+3. Haxe console: engine may log Haxe-level errors separately
+
+---
+
+## Advanced: Adding Custom Traces
+
+### Log from Your Script
+
+```lua
+if Debug.isEnabled() then
+    Debug.info('Starting level: ' .. curLevel)
+end
+
+-- Safe custom logging
+if Debug.isEnabled() then
+    Debug.info('Boyfriend x = ' .. game.boyfriend:get('x'))
+end
+```
+
+### Wrap Calls in pcall for Safety
+
+```lua
+Debug.enable(true)
+
+local ok, result = pcall(function()
+    return PlayState:call('riskySomething', {...})
+end)
+
+if ok then
+    Debug.info('Call succeeded: ' .. tostring(result))
+else
+    Debug.info('Call failed with error: ' .. tostring(result))
+end
+```
+
+---
+
+## Debug Checklist
+
+- [ ] Enable debug: `Debug.enable(true)`
+- [ ] Set mode: `Debug.mode('both')` for max visibility
+- [ ] Set file: `Debug.file('mods/my.log', true)` if needed
+- [ ] Reproduce minimal failing case with `pcall` wrapper
+- [ ] Check logs for "Haxe Compile" or "-> FAILED" lines
+- [ ] Copy Haxe code and test with `Haxe.run(...)`
+- [ ] Fix and retry
+- [ ] Clean shutdown: `PsychObject.shutdownDebug()`
+
+---
+
+## See Also
+
+- [DEBUG.md](DEBUG.md) - Log format reference
+- [AIP_advanced_examples.md](AIP_advanced_examples.md) - Advanced patterns with debugging examples
